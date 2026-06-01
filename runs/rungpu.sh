@@ -12,19 +12,14 @@
 
 # all the setup stuff
 export NANOCHAT_BASE_DIR="$HOME/.cache/nanochat"
-
 mkdir -p $NANOCHAT_BASE_DIR
 command -v uv &> /dev/null || curl -LsSf https://astral.sh/uv/install.sh | sh
 [ -d ".venv" ] || uv venv
-uv sync --extra cpu
+uv sync --extra gpu
 source .venv/bin/activate
 if [ -z "$WANDB_RUN" ]; then
     WANDB_RUN=dummy
 fi
-
-export OMP_NUM_THREADS=8
-export MKL_NUM_THREADS=8
-export NUMEXPR_NUM_THREADS=8
 
 # train tokenizer on ~2B characters (~34 seconds on my MacBook Pro M3 Max)
 python -m nanochat.dataset -n 8
@@ -39,13 +34,14 @@ python -m scripts.base_train \
     --head-dim=64 \
     --window-pattern=L \
     --max-seq-len=512 \
-    --device-batch-size=32 \
+    --device-batch-size=4 \
     --total-batch-size=16384 \
     --eval-every=100 \
     --eval-tokens=524288 \
     --core-metric-every=-1 \
     --sample-every=100 \
     --num-iterations=5000 \
+    --device-type=cuda \
     --run=$WANDB_RUN
 python -m scripts.base_eval --device-batch-size=1 --split-tokens=16384 --max-per-task=16
 
@@ -53,11 +49,12 @@ python -m scripts.base_eval --device-batch-size=1 --split-tokens=16384 --max-per
 curl -L -o $NANOCHAT_BASE_DIR/identity_conversations.jsonl https://karpathy-public.s3.us-west-2.amazonaws.com/identity_conversations.jsonl
 python -m scripts.chat_sft \
     --max-seq-len=512 \
-    --device-batch-size=32 \
+    --device-batch-size=4 \
     --total-batch-size=16384 \
     --eval-every=200 \
     --eval-tokens=524288 \
     --num-iterations=1500 \
+    --device-type=cuda \
     --run=$WANDB_RUN
 
 # Chat with the model over CLI
