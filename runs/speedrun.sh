@@ -21,6 +21,8 @@ PRETRAIN_DEPTH=12
 PRETRAIN_MAX_SEQ_LEN=512
 PRETRAIN_DEVICE_BATCH_SIZE=4
 PRETRAIN_TOTAL_BATCH_SIZE=16384
+# target-param-data-ratio=4 for d12 = ~70K steps (~12 hrs pretraining, ~10 hrs total).
+PRETRAIN_PARAM_DATA_RATIO=4
 SFT_DEVICE_BATCH_SIZE=4
 BASE_EVAL_DEVICE_BATCH_SIZE=1
 
@@ -80,7 +82,7 @@ wait $DATASET_DOWNLOAD_PID
 
 # d12 model tuned for a single RTX 4060 GPU with 8GB-ish VRAM.
 # FP8 is not enabled here because RTX 4060 is not H100-class hardware.
-torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_train -- --depth=$PRETRAIN_DEPTH --max-seq-len=$PRETRAIN_MAX_SEQ_LEN --target-param-data-ratio=8 --device-batch-size=$PRETRAIN_DEVICE_BATCH_SIZE --total-batch-size=$PRETRAIN_TOTAL_BATCH_SIZE --run=$WANDB_RUN
+torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_train -- --depth=$PRETRAIN_DEPTH --max-seq-len=$PRETRAIN_MAX_SEQ_LEN --target-param-data-ratio=$PRETRAIN_PARAM_DATA_RATIO --device-batch-size=$PRETRAIN_DEVICE_BATCH_SIZE --total-batch-size=$PRETRAIN_TOTAL_BATCH_SIZE --run=$WANDB_RUN
 # evaluate the model: CORE metric, BPB on train/val, and draw samples
 torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_eval -- --device-batch-size=$BASE_EVAL_DEVICE_BATCH_SIZE
 
@@ -92,7 +94,7 @@ torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_eval -- -
 curl -L -o $NANOCHAT_BASE_DIR/identity_conversations.jsonl https://karpathy-public.s3.us-west-2.amazonaws.com/identity_conversations.jsonl
 
 # run SFT and eval the model
-torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_sft -- --device-batch-size=$SFT_DEVICE_BATCH_SIZE --run=$WANDB_RUN
+torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_sft -- --device-batch-size=$SFT_DEVICE_BATCH_SIZE --warmup-ratio=0.2 --init-lr-frac=0.1 --load-optimizer=0 --run=$WANDB_RUN
 torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_eval -- -i sft
 
 # chat with the model over CLI! Leave out the -p to chat interactively

@@ -213,7 +213,12 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
         while len(conv_buffer) < buffer_size:
             conversation = dataset[cursor]
             ids, mask = tokenizer.render_conversation(conversation)
-            conv_buffer.append((ids, mask))
+            # Only add conversations that can fit in a row. Conversations longer than
+            # row_capacity would never be selected by the best-fit packer and would
+            # accumulate in the buffer, eventually causing all rows to be padded with
+            # mask=0 BOS tokens, producing all-masked batches and NaN loss.
+            if len(ids) <= row_capacity:
+                conv_buffer.append((ids, mask))
             cursor += ddp_world_size
             if cursor >= dataset_size:
                 cursor = cursor % dataset_size
@@ -333,6 +338,9 @@ min_val_bpb = float("inf")
 smooth_train_loss = 0 # EMA of training loss
 ema_beta = 0.9 # EMA decay factor
 total_training_time = 0 # total wall-clock time of training
+num_skipped_microbatches = 0 # micro-batches dropped due to non-finite (e.g. fully-masked) loss
+num_skipped_steps = 0 # optimizer steps skipped due to non-finite accumulated gradient
+train_loss = torch.tensor(0.0, device=device) # last finite training loss (for logging)
 step = 0
 while True:
     flops_so_far = num_flops_per_token * args.total_batch_size * step
@@ -429,14 +437,19 @@ while True:
     # evaluate the gradient
     synchronize()
     t0 = time.time()
+    any_finite_microbatch = False
     for micro_step in range(grad_accum_steps):
+        # A packed micro-batch can end up with zero unmasked (assistant) target tokens,
+        # e.g. when best-fit packing fully pads a row. cross_entropy(reduction='mean') then
+        # averages over zero elements and returns NaN, whose gradient would silently poison
+        # every weight. Skip the backward for any micro-batch with a non-finite loss.
         loss = model(x, y)
-        train_loss = loss.detach() # for logging
-        loss = loss / grad_accum_steps # each .backward() is a grad sum => normalize loss here
-        if scaler is not None:
-            scaler.scale(loss).backward()
+        if torch.isfinite(loss):
+            train_loss = loss.detach() # for logging
+            (loss / grad_accum_steps).backward() # normalize: each .backward() is a grad sum
+            any_finite_microbatch = True
         else:
-            loss.backward()
+            num_skipped_microbatches += 1
         x, y = next(train_loader) # prefetch the next batch while the GPU is busy with forward/backward
         progress = max(progress, approx_progress) # only increase progress monotonically
     # step the optimizer
@@ -454,7 +467,23 @@ while True:
         scaler.step(optimizer)
         scaler.update()
     else:
-        optimizer.step()
+        if not any_finite_microbatch:
+            # All microbatches were non-finite: no backward was called, so gradients are
+            # still None from zero_grad(set_to_none=True). Calling clip_grad_norm_ returns 0
+            # (treated as finite), which would cause optimizer.step() to crash on None grads.
+            num_skipped_steps += 1
+            if num_skipped_steps <= 10:
+                print0(f"step {step:05d} | all microbatches non-finite; skipping optimizer step")
+        else:
+            # Clip gradients (bounds rare loss spikes) and skip the update entirely if the
+            # accumulated gradient is still non-finite, so a single bad batch cannot poison weights.
+            grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
+            if torch.isfinite(grad_norm):
+                optimizer.step()
+            else:
+                num_skipped_steps += 1
+                if num_skipped_steps <= 10:
+                    print0(f"step {step:05d} | non-finite grad norm; skipping optimizer step")
     model.zero_grad(set_to_none=True)
     synchronize()
     t1 = time.time()

@@ -1,0 +1,39 @@
+2026-06-03 09:45:24,477 - nanochat.common - [32m[1mINFO[0m - Distributed world size: 1
+2026-06-03 09:45:24,478 - nanochat.common - [33m[1mWARNING[0m - Peak flops undefined for: NVIDIA GeForce RTX 4060, MFU will show as 0%
+2026-06-03 09:45:24,478 - nanochat.checkpoint_manager - [32m[1mINFO[0m - No model tag provided, guessing model tag: d6
+2026-06-03 09:45:24,479 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Loading model from /home/wcc/.cache/nanochat/base_checkpoints/d6 with step 5000
+2026-06-03 09:45:24,772 - nanochat.checkpoint_manager - [32m[1mINFO[0m - Building model with config: {'sequence_len': 512, 'vocab_size': 32768, 'n_layer': 6, 'n_head': 6, 'n_kv_head': 6, 'n_embd': 384, 'window_pattern': 'L'}
+Traceback (most recent call last):
+  File "/home/wcc/.local/share/uv/python/cpython-3.10-linux-x86_64-gnu/lib/python3.10/runpy.py", line 196, in _run_module_as_main
+    return _run_code(code, main_globals, None,
+  File "/home/wcc/.local/share/uv/python/cpython-3.10-linux-x86_64-gnu/lib/python3.10/runpy.py", line 86, in _run_code
+    exec(code, run_globals)
+  File "/home/wcc/code/nanochat/scripts/chat_sft.py", line 467, in <module>
+    optimizer.step()
+  File "/home/wcc/code/nanochat/.venv/lib/python3.10/site-packages/torch/optim/optimizer.py", line 517, in wrapper
+    out = func(*args, **kwargs)
+  File "/home/wcc/code/nanochat/.venv/lib/python3.10/site-packages/torch/utils/_contextlib.py", line 120, in decorate_context
+    return func(*args, **kwargs)
+  File "/home/wcc/code/nanochat/nanochat/optim.py", line 291, in step
+    self._step_muon(group)
+  File "/home/wcc/code/nanochat/nanochat/optim.py", line 259, in _step_muon
+    stacked_grads = torch.stack([p.grad for p in params])
+TypeError: expected Tensor as element 0 in argument 0, but got NoneType
+COMPUTE_DTYPE: torch.bfloat16 (auto-detected: CUDA SM 89 (bf16 supported))
+GPU: NVIDIA GeForce RTX 4060 | Peak FLOPS (BF16): inf
+WARNING: Flash Attention 3 not available, using PyTorch SDPA fallback. Training will be less efficient.
+Using max_seq_len=512
+Using device_batch_size=4
+Using total_batch_size=16384
+Inherited embedding_lr=0.3 from pretrained checkpoint
+Inherited unembedding_lr=0.008 from pretrained checkpoint
+Inherited matrix_lr=0.02 from pretrained checkpoint
+Tokens / micro-batch / rank: 4 x 512 = 2,048
+Tokens / micro-batch: 2,048
+Total batch size 16,384 => gradient accumulation steps: 8
+Scaling the LR for the AdamW parameters ∝1/√(384/768) = 1.414214
+Training mixture: 1,071,759 rows (MMLU x3, GSM8K x4)
+Step 00000 | Validation bpb: 1.0590
+step 00001 (0.60%) | loss: 1.816624 | lrm: 0.12 | dt: 1922.54ms | tok/sec: 8,522 | mfu: 0.00 | epoch: 1 | total time: 0.00m
+step 00002 (1.13%) | loss: 2.775521 | lrm: 0.23 | dt: 189.71ms | tok/sec: 86,362 | mfu: 0.00 | epoch: 1 | total time: 0.00m
+step 00003 (1.67%) | loss: 3.037754 | lrm: 0.33 | dt: 164.29ms | tok/sec: 99,724 | mfu: 0.00 | epoch: 1 | total time: 0.00m
