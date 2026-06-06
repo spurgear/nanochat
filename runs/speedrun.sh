@@ -82,7 +82,7 @@ wait $DATASET_DOWNLOAD_PID
 
 # d12 model tuned for a single RTX 4060 GPU with 8GB-ish VRAM.
 # FP8 is not enabled here because RTX 4060 is not H100-class hardware.
-torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_train -- --depth=$PRETRAIN_DEPTH --max-seq-len=$PRETRAIN_MAX_SEQ_LEN --target-param-data-ratio=$PRETRAIN_PARAM_DATA_RATIO --device-batch-size=$PRETRAIN_DEVICE_BATCH_SIZE --total-batch-size=$PRETRAIN_TOTAL_BATCH_SIZE --core-metric-every=-1 --save-every=2000 --run=$WANDB_RUN
+torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_train -- --depth=$PRETRAIN_DEPTH --max-seq-len=$PRETRAIN_MAX_SEQ_LEN --target-param-data-ratio=$PRETRAIN_PARAM_DATA_RATIO --device-batch-size=$PRETRAIN_DEVICE_BATCH_SIZE --total-batch-size=$PRETRAIN_TOTAL_BATCH_SIZE --core-metric-every=-1 --save-every=2000 --eval-every=2000 --eval-tokens=524288 --run=$WANDB_RUN
 # evaluate the model: CORE metric, BPB on train/val, and draw samples
 torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_eval -- --device-batch-size=$BASE_EVAL_DEVICE_BATCH_SIZE
 
