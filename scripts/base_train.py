@@ -32,7 +32,7 @@ from nanochat.tokenizer import get_tokenizer, get_token_bytes
 from nanochat.checkpoint_manager import save_checkpoint, load_checkpoint
 from nanochat.loss_eval import evaluate_bpb
 from nanochat.engine import Engine
-from nanochat.flash_attention import HAS_FA3
+from nanochat.flash_attention import HAS_FA3, HAS_FA2
 from scripts.base_eval import evaluate_core
 print_banner()
 
@@ -100,17 +100,19 @@ use_dummy_wandb = args.run == "dummy" or not master_process
 wandb_run = DummyWandb() if use_dummy_wandb else wandb.init(project="nanochat", name=args.run, config=user_config)
 
 # Flash Attention status
-from nanochat.flash_attention import USE_FA3
-using_fa3 = USE_FA3
-if using_fa3:
+from nanochat.flash_attention import USE_FA3, USE_FA2
+if USE_FA3:
     print0("✓ Using Flash Attention 3 (Hopper GPU detected), efficient, new and awesome.")
+elif USE_FA2:
+    print0("✓ Using Flash Attention 2 (Ampere/Ada GPU detected).")
 else:
     print0("!" * 80)
     if HAS_FA3 and COMPUTE_DTYPE != torch.bfloat16:
         print0(f"WARNING: Flash Attention 3 only supports bf16, but COMPUTE_DTYPE={COMPUTE_DTYPE}. Using PyTorch SDPA fallback")
-    else:
-        print0("WARNING: Flash Attention 3 not available, using PyTorch SDPA fallback")
-    print0("WARNING: Training will be less efficient without FA3")
+    elif not HAS_FA2:
+        print0("WARNING: Flash Attention 2/3 not available, using PyTorch SDPA fallback")
+        print0("WARNING: Install flash-attn for better throughput: pip install flash-attn --no-build-isolation")
+    print0("WARNING: Training will be less efficient without FA2/FA3")
     if args.window_pattern != "L":
         print0(f"WARNING: SDPA has no support for sliding window attention (window_pattern='{args.window_pattern}'). Your GPU utilization will be terrible.")
         print0("WARNING: Recommend using --window-pattern L for full context attention without alternating sliding window patterns.")
@@ -243,7 +245,7 @@ def disable_fp8(model):
 # Compile the model
 
 orig_model = model # original, uncompiled model, for saving raw model state_dict and for inference/evaluation (because the shapes may change shape)
-model = torch.compile(model, dynamic=False) # the inputs to model will never change shape so dynamic=False is safe
+model = torch.compile(model, dynamic=False, mode="reduce-overhead") # the inputs to model will never change shape so dynamic=False is safe
 
 # -----------------------------------------------------------------------------
 # Scaling laws and muP extrapolations to determine the optimal training horizon, batch size, learning rates, weight decay.

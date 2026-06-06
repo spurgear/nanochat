@@ -11,3 +11,9 @@ eval_bundle/
 # Local setup
 CLAUDE.md
 wandb/
+
+# training logs
+**/speedrun.log
+
+# claude
+.claude/*.lock

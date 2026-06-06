@@ -59,6 +59,7 @@ cpu = [
 ]
 gpu = [
     "torch==2.9.1",
+    "flash-attn>=2.5.0",
 ]
 
 [tool.uv]

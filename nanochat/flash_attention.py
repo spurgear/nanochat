@@ -1,8 +1,9 @@
 """
-Unified Flash Attention interface with automatic FA3/SDPA switching.
+Unified Flash Attention interface with automatic FA3/FA2/SDPA switching.
 
-Exports `flash_attn` module that matches the FA3 API exactly, but falls back
-to PyTorch SDPA on non-Hopper GPUs (including Blackwell), MPS, and CPU.
+Priority: FA3 (Hopper, sm90) > FA2 (Ampere/Ada, sm80+) > PyTorch SDPA.
+
+Exports `flash_attn` module that matches the FA3 API exactly.
 
 Usage (drop-in replacement for FA3):
     from nanochat.flash_attention import flash_attn
@@ -38,29 +39,60 @@ def _load_flash_attention_3():
         return None
 
 
+# =============================================================================
+# Detection: Try to load FA2 on Ampere/Ada GPUs (SM 8.0+)
+# =============================================================================
+def _load_flash_attention_2():
+    """Try to load Flash Attention 2 (requires CUDA SM 8.0+, bf16/fp16 only)."""
+    if not torch.cuda.is_available():
+        return None
+    try:
+        major, minor = torch.cuda.get_device_capability()
+        if (major, minor) < (8, 0):
+            return None
+        import flash_attn.flash_attn_interface as fa2
+        return fa2
+    except Exception:
+        return None
+
+
 _fa3 = _load_flash_attention_3()
 HAS_FA3 = _fa3 is not None
 
-# Override for testing: set to 'fa3', 'sdpa', or None (auto)
+_fa2 = _load_flash_attention_2()
+HAS_FA2 = _fa2 is not None
+
+# Override for testing: set to 'fa3', 'fa2', 'sdpa', or None (auto)
 _override_impl = None
 
 
-def _resolve_use_fa3():
-    """Decide once whether to use FA3, based on availability, override, and dtype."""
+def _resolve_impl():
+    """Return 'fa3', 'fa2', or 'sdpa' based on hardware and dtype."""
     if _override_impl == 'fa3':
         assert HAS_FA3, "Cannot override to FA3: not available on this hardware"
-        return True
+        return 'fa3'
+    if _override_impl == 'fa2':
+        assert HAS_FA2, "Cannot override to FA2: not available on this hardware"
+        return 'fa2'
     if _override_impl == 'sdpa':
-        return False
-    if HAS_FA3:
-        # FA3 Hopper kernels only support bf16 and fp8; fp16/fp32 must use SDPA fallback
-        from nanochat.common import COMPUTE_DTYPE
-        if COMPUTE_DTYPE == torch.bfloat16:
-            return True
-        return False
-    return False
+        return 'sdpa'
 
-USE_FA3 = _resolve_use_fa3()
+    from nanochat.common import COMPUTE_DTYPE
+    # FA3 and FA2 only support bf16 and fp16 (not fp32)
+    if COMPUTE_DTYPE not in (torch.bfloat16, torch.float16):
+        return 'sdpa'
+
+    if HAS_FA3 and COMPUTE_DTYPE == torch.bfloat16:
+        # FA3 Hopper kernels only support bf16 and fp8
+        return 'fa3'
+    if HAS_FA2:
+        return 'fa2'
+    return 'sdpa'
+
+
+_IMPL = _resolve_impl()
+USE_FA3 = (_IMPL == 'fa3')  # kept for backward compat
+USE_FA2 = (_IMPL == 'fa2')
 
 
 # =============================================================================
@@ -116,8 +148,11 @@ def flash_attn_func(q, k, v, causal=False, window_size=(-1, -1)):
     Returns:
         Output tensor of shape (B, T, H, D)
     """
-    if USE_FA3:
+    if _IMPL == 'fa3':
         return _fa3.flash_attn_func(q, k, v, causal=causal, window_size=window_size)
+
+    if _IMPL == 'fa2':
+        return _fa2.flash_attn_func(q, k, v, causal=causal, window_size=window_size)
 
     # SDPA fallback: transpose (B, T, H, D) -> (B, H, T, D)
     q = q.transpose(1, 2)
@@ -133,7 +168,7 @@ def flash_attn_with_kvcache(q, k_cache, v_cache, k=None, v=None, cache_seqlens=N
     """
     Flash Attention with KV cache for inference.
 
-    FA3 updates k_cache/v_cache in-place. Our SDPA fallback does the same.
+    FA3/FA2 update k_cache/v_cache in-place. Our SDPA fallback does the same.
 
     Args:
         q: Queries, shape (B, T_new, H, D)
@@ -146,10 +181,18 @@ def flash_attn_with_kvcache(q, k_cache, v_cache, k=None, v=None, cache_seqlens=N
     Returns:
         Output tensor of shape (B, T_new, H, D)
     """
-    if USE_FA3:
+    if _IMPL == 'fa3':
         return _fa3.flash_attn_with_kvcache(
             q, k_cache, v_cache, k=k, v=v, cache_seqlens=cache_seqlens,
             causal=causal, window_size=window_size
+        )
+
+    if _IMPL == 'fa2':
+        # FA2 flash_attn_with_kvcache is always causal during decoding (cache_seqlens handles masking).
+        # window_size requires flash-attn >= 2.5.
+        return _fa2.flash_attn_with_kvcache(
+            q, k_cache, v_cache, k=k, v=v, cache_seqlens=cache_seqlens,
+            window_size=window_size
         )
 
     # SDPA fallback: manually manage KV cache

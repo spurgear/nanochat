@@ -263,6 +263,7 @@ def get_peak_flops(device_name: str) -> float:
         # Consumer RTX
         (["5090"], 209.5e12),
         (["4090"], 165.2e12),
+        (["4060"], 30.2e12),
         (["3090"], 71e12),
     )
     for patterns, flops in _PEAK_FLOPS_TABLE:
