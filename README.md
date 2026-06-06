@@ -220,3 +220,55 @@ If you find nanochat helpful in your research cite simply as:
 ## License
 
 MIT
+
+## Enabling Flash Attention 2 (Ampere/Ada GPUs)
+
+nanochat automatically uses Flash Attention 2 on SM 8.0+ GPUs (A100, RTX 3090, RTX 4060, etc.) when the `flash-attn` package is installed. Without it, training falls back to PyTorch SDPA.
+
+### Option A: Pre-built wheel (recommended, seconds)
+
+Pre-built wheels are available for common configurations on the [flash-attn releases page](https://github.com/Dao-AILab/flash-attention/releases). The `pyproject.toml` in this repo already pins the right wheel for **Python 3.12 + torch 2.9 + CUDA 12.x**, so `uv sync --extra gpu` handles it automatically.
+
+If your environment differs, find the matching wheel on the releases page and update the `flash-attn` source entry in `pyproject.toml`:
+
+```toml
+[tool.uv.sources]
+flash-attn = { url = "https://github.com/Dao-AILab/flash-attention/releases/download/v2.8.3/flash_attn-2.8.3+cu12torch2.9cxx11abiTRUE-cp312-cp312-linux_x86_64.whl" }
+```
+
+### Option B: Build from source (10–20 min)
+
+Required if no pre-built wheel matches your environment.
+
+**Step 1: Install the CUDA toolkit** (skip if `nvcc --version` already works)
+
+```bash
+# Add NVIDIA's package repo (WSL2 variant shown; for native Linux replace wsl-ubuntu with ubuntu2204 etc.)
+wget https://developer.download.nvidia.com/compute/cuda/repos/wsl-ubuntu/x86_64/cuda-keyring_1.1-1_all.deb
+sudo dpkg -i cuda-keyring_1.1-1_all.deb
+sudo apt update
+sudo apt install -y cuda-toolkit-12-8   # match the CUDA version torch was built against
+
+# Add to ~/.bashrc
+export PATH=/usr/local/cuda-12.8/bin:$PATH
+export CUDA_HOME=/usr/local/cuda-12.8
+source ~/.bashrc
+nvcc --version   # should print release 12.8
+```
+
+**Step 2: Install flash-attn**
+
+```bash
+source .venv/bin/activate
+uv pip install setuptools
+uv pip install flash-attn --no-build-isolation
+```
+
+### Verify
+
+```bash
+python -c "from nanochat.flash_attention import HAS_FA2, USE_FA2; print(f'HAS_FA2={HAS_FA2}, USE_FA2={USE_FA2}')"
+# Expected on Ada/Ampere with bf16: HAS_FA2=True, USE_FA2=True
+```
+
+On the next training run you should see `✓ Using Flash Attention 2 (Ampere/Ada GPU detected).` in the output.
