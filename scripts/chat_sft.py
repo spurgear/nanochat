@@ -58,6 +58,7 @@ parser.add_argument("--warmup-ratio", type=float, default=0.0, help="ratio of it
 parser.add_argument("--warmdown-ratio", type=float, default=0.5, help="ratio of iterations for LR warmdown")
 parser.add_argument("--final-lr-frac", type=float, default=0.0, help="final LR as fraction of initial LR")
 # Evaluation
+parser.add_argument("--save-every", type=int, default=-1, help="save checkpoint every N steps (-1 = only save at end)")
 parser.add_argument("--eval-every", type=int, default=200, help="evaluate val bpb every N steps (-1 = disable)")
 parser.add_argument("--eval-tokens", type=int, default=40*524288, help="number of tokens to evaluate val loss on")
 parser.add_argument("--chatcore-every", type=int, default=200, help="evaluate ChatCORE metric every N steps (-1 = disable)")
@@ -164,20 +165,19 @@ for group in optimizer.param_groups:
 identity_conversations_filepath = os.path.join(base_dir, "identity_conversations.jsonl")
 train_tasks = [
     SmolTalk(split="train"), # 460K rows of general conversations
+    SmolTalk(split="train"), # 2 epochs of SmolTalk for more conversational signal
     CustomJSON(filepath=identity_conversations_filepath), # 1000 rows of synthetic identity conversations
     CustomJSON(filepath=identity_conversations_filepath), # 2 epochs of these
-    *[MMLU(subset="all", split="auxiliary_train") for _ in range(args.mmlu_epochs)], # 100K rows per epoch
     *[GSM8K(subset="main", split="train") for _ in range(args.gsm8k_epochs)], # 8K rows per epoch
     SimpleSpelling(size=200000, split="train"), # 200K rows of Simple Spelling (e.g. spell the word 'apple')
     SpellingBee(size=80000, split="train"), # 80K rows of Spelling Bee (e.g. how many 'r' are in 'strawberry'?)
 ]
 train_dataset = TaskMixture(train_tasks)
-print0(f"Training mixture: {len(train_dataset):,} rows (MMLU x{args.mmlu_epochs}, GSM8K x{args.gsm8k_epochs})")
+print0(f"Training mixture: {len(train_dataset):,} rows (SmolTalk x2, GSM8K x{args.gsm8k_epochs}, no MMLU)")
 val_dataset = TaskMixture([
     SmolTalk(split="test"), # 24K rows in test set
-    MMLU(subset="all", split="test", stop=5200), # 14K rows in test set, use only 5.2K to match the train ratios
     GSM8K(subset="main", split="test", stop=420), # 1.32K rows in test set, use only 420 to match the train ratios
-]) # total: 24K + 5.2K + 0.42K ~= 29.6K rows
+]) # total: 24K + 0.42K ~= 24.4K rows
 # DataLoader is defined here, it emits inputs, targets : 2D tensors of shape (device_batch_size, max_seq_len)
 # A big problem is that we don't know the final num_iterations in advance. So we create
 # these two global variables and update them from within the data generator.
@@ -360,6 +360,30 @@ while True:
         print0(f"Step {step:05d} | Validation bpb: {val_bpb:.4f}")
         if val_bpb < min_val_bpb:
             min_val_bpb = val_bpb
+            output_dirname = args.model_tag if args.model_tag else f"d{depth}"
+            checkpoint_dir = os.path.join(base_dir, "chatsft_checkpoints", output_dirname)
+            save_checkpoint(
+                checkpoint_dir,
+                step,
+                orig_model.state_dict(),
+                optimizer.state_dict(),
+                {
+                    "step": step,
+                    "val_bpb": val_bpb,
+                    "model_config": {
+                        "sequence_len": args.max_seq_len,
+                        "vocab_size": tokenizer.get_vocab_size(),
+                        "n_layer": depth,
+                        "n_head": model.config.n_head,
+                        "n_kv_head": model.config.n_kv_head,
+                        "n_embd": model.config.n_embd,
+                        "window_pattern": model.config.window_pattern,
+                    },
+                    "user_config": user_config,
+                },
+                rank=ddp_rank,
+            )
+            print0(f"Step {step:05d} | New best val bpb {val_bpb:.4f} — checkpoint saved")
         wandb_run.log({
             "step": step,
             "total_training_flops": flops_so_far,
@@ -403,8 +427,9 @@ while True:
         })
         model.train()
 
-    # save checkpoint at the end of the run (all ranks participate so each saves its optimizer shard)
-    if last_step:
+    # save checkpoint periodically and at the end of the run
+    save_now = last_step or (args.save_every > 0 and step > 0 and step % args.save_every == 0)
+    if save_now:
         output_dirname = args.model_tag if args.model_tag else f"d{depth}" # e.g. d12
         checkpoint_dir = os.path.join(base_dir, "chatsft_checkpoints", output_dirname)
         save_checkpoint(
@@ -431,6 +456,7 @@ while True:
 
     if last_step:
         break
+
 
     # -------------------------------------------------------------------------
     # single training step

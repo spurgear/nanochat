@@ -17,12 +17,13 @@ mkdir -p $NANOCHAT_BASE_DIR
 
 # GPU configuration for a single RTX 4060
 NPROC_PER_NODE=1
-PRETRAIN_DEPTH=12
-PRETRAIN_MAX_SEQ_LEN=512
+PRETRAIN_DEPTH=8
+PRETRAIN_ASPECT_RATIO=96
+PRETRAIN_MAX_SEQ_LEN=1024
 PRETRAIN_DEVICE_BATCH_SIZE=4
 PRETRAIN_TOTAL_BATCH_SIZE=16384
-# target-param-data-ratio=4 for d12 = ~70K steps (~12 hrs pretraining, ~10 hrs total).
-PRETRAIN_PARAM_DATA_RATIO=4
+# depth=8, aspect_ratio=96 => n_embd=768, wider+shallower than d12. ratio=8 trains longer for better data efficiency.
+PRETRAIN_PARAM_DATA_RATIO=8
 SFT_DEVICE_BATCH_SIZE=4
 BASE_EVAL_DEVICE_BATCH_SIZE=1
 
@@ -82,7 +83,7 @@ wait $DATASET_DOWNLOAD_PID
 
 # d12 model tuned for a single RTX 4060 GPU with 8GB-ish VRAM.
 # FP8 is not enabled here because RTX 4060 is not H100-class hardware.
-torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_train -- --depth=$PRETRAIN_DEPTH --max-seq-len=$PRETRAIN_MAX_SEQ_LEN --target-param-data-ratio=$PRETRAIN_PARAM_DATA_RATIO --device-batch-size=$PRETRAIN_DEVICE_BATCH_SIZE --total-batch-size=$PRETRAIN_TOTAL_BATCH_SIZE --core-metric-every=-1 --save-every=5000 --eval-every=5000 --eval-tokens=524288 --run=$WANDB_RUN
+torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_train -- --depth=$PRETRAIN_DEPTH --aspect-ratio=$PRETRAIN_ASPECT_RATIO --max-seq-len=$PRETRAIN_MAX_SEQ_LEN --target-param-data-ratio=$PRETRAIN_PARAM_DATA_RATIO --device-batch-size=$PRETRAIN_DEVICE_BATCH_SIZE --total-batch-size=$PRETRAIN_TOTAL_BATCH_SIZE --core-metric-every=-1 --save-every=5000 --eval-every=5000 --eval-tokens=524288 --run=$WANDB_RUN
 # evaluate the model: CORE metric, BPB on train/val, and draw samples
 torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_eval -- --device-batch-size=$BASE_EVAL_DEVICE_BATCH_SIZE
 
