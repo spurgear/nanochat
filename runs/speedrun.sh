@@ -19,6 +19,7 @@ mkdir -p $NANOCHAT_BASE_DIR
 NPROC_PER_NODE=1
 PRETRAIN_DEPTH=8
 PRETRAIN_ASPECT_RATIO=96
+MODEL_TAG="d${PRETRAIN_DEPTH}"
 PRETRAIN_MAX_SEQ_LEN=1024
 PRETRAIN_DEVICE_BATCH_SIZE=4
 PRETRAIN_TOTAL_BATCH_SIZE=16384
@@ -83,9 +84,9 @@ wait $DATASET_DOWNLOAD_PID
 
 # d12 model tuned for a single RTX 4060 GPU with 8GB-ish VRAM.
 # FP8 is not enabled here because RTX 4060 is not H100-class hardware.
-torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_train -- --depth=$PRETRAIN_DEPTH --aspect-ratio=$PRETRAIN_ASPECT_RATIO --max-seq-len=$PRETRAIN_MAX_SEQ_LEN --target-param-data-ratio=$PRETRAIN_PARAM_DATA_RATIO --device-batch-size=$PRETRAIN_DEVICE_BATCH_SIZE --total-batch-size=$PRETRAIN_TOTAL_BATCH_SIZE --core-metric-every=-1 --save-every=5000 --eval-every=5000 --eval-tokens=524288 --run=$WANDB_RUN
+torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_train -- --depth=$PRETRAIN_DEPTH --aspect-ratio=$PRETRAIN_ASPECT_RATIO --max-seq-len=$PRETRAIN_MAX_SEQ_LEN --target-param-data-ratio=$PRETRAIN_PARAM_DATA_RATIO --device-batch-size=$PRETRAIN_DEVICE_BATCH_SIZE --total-batch-size=$PRETRAIN_TOTAL_BATCH_SIZE --core-metric-every=-1 --save-every=5000 --eval-every=5000 --eval-tokens=524288 --model-tag=$MODEL_TAG --run=$WANDB_RUN
 # evaluate the model: CORE metric, BPB on train/val, and draw samples
-torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_eval -- --device-batch-size=$BASE_EVAL_DEVICE_BATCH_SIZE
+torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_eval -- --device-batch-size=$BASE_EVAL_DEVICE_BATCH_SIZE --model-tag=$MODEL_TAG
 
 # -----------------------------------------------------------------------------
 # SFT (teach the model conversation special tokens, tool use, multiple choice)
@@ -95,8 +96,8 @@ torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_eval -- -
 curl -L -o $NANOCHAT_BASE_DIR/identity_conversations.jsonl https://karpathy-public.s3.us-west-2.amazonaws.com/identity_conversations.jsonl
 
 # run SFT and eval the model
-torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_sft -- --device-batch-size=$SFT_DEVICE_BATCH_SIZE --warmup-ratio=0.2 --init-lr-frac=0.1 --load-optimizer=0 --patience=5 --run=$WANDB_RUN
-torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_eval -- -i sft
+torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_sft -- --device-batch-size=$SFT_DEVICE_BATCH_SIZE --warmup-ratio=0.2 --init-lr-frac=0.1 --load-optimizer=0 --patience=5 --model-tag=$MODEL_TAG --run=$WANDB_RUN
+torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_eval -- -i sft --model-tag=$MODEL_TAG
 
 # chat with the model over CLI! Leave out the -p to chat interactively
 # python -m scripts.chat_cli -p "Why is the sky blue?"
