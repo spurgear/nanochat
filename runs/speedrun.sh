@@ -95,7 +95,7 @@ torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.base_eval -- -
 curl -L -o $NANOCHAT_BASE_DIR/identity_conversations.jsonl https://karpathy-public.s3.us-west-2.amazonaws.com/identity_conversations.jsonl
 
 # run SFT and eval the model
-torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_sft -- --device-batch-size=$SFT_DEVICE_BATCH_SIZE --warmup-ratio=0.2 --init-lr-frac=0.1 --load-optimizer=0 --run=$WANDB_RUN
+torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_sft -- --device-batch-size=$SFT_DEVICE_BATCH_SIZE --warmup-ratio=0.2 --init-lr-frac=0.1 --load-optimizer=0 --patience=5 --run=$WANDB_RUN
 torchrun --standalone --nproc_per_node=$NPROC_PER_NODE -m scripts.chat_eval -- -i sft
 
 # chat with the model over CLI! Leave out the -p to chat interactively

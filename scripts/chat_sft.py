@@ -59,6 +59,7 @@ parser.add_argument("--warmdown-ratio", type=float, default=0.5, help="ratio of 
 parser.add_argument("--final-lr-frac", type=float, default=0.0, help="final LR as fraction of initial LR")
 # Evaluation
 parser.add_argument("--save-every", type=int, default=-1, help="save checkpoint every N steps (-1 = only save at end)")
+parser.add_argument("--patience", type=int, default=-1, help="stop early if val bpb hasn't improved for this many evals (-1 = disabled)")
 parser.add_argument("--eval-every", type=int, default=200, help="evaluate val bpb every N steps (-1 = disable)")
 parser.add_argument("--eval-tokens", type=int, default=40*524288, help="number of tokens to evaluate val loss on")
 parser.add_argument("--chatcore-every", type=int, default=200, help="evaluate ChatCORE metric every N steps (-1 = disable)")
@@ -335,6 +336,7 @@ def get_muon_momentum(it):
 # Training loop
 x, y = next(train_loader) # prefetch the very first batch of data
 min_val_bpb = float("inf")
+evals_since_best = 0
 smooth_train_loss = 0 # EMA of training loss
 ema_beta = 0.9 # EMA decay factor
 total_training_time = 0 # total wall-clock time of training
@@ -360,6 +362,7 @@ while True:
         print0(f"Step {step:05d} | Validation bpb: {val_bpb:.4f}")
         if val_bpb < min_val_bpb:
             min_val_bpb = val_bpb
+            evals_since_best = 0
             output_dirname = args.model_tag if args.model_tag else f"d{depth}"
             checkpoint_dir = os.path.join(base_dir, "chatsft_checkpoints", output_dirname)
             save_checkpoint(
@@ -384,6 +387,11 @@ while True:
                 rank=ddp_rank,
             )
             print0(f"Step {step:05d} | New best val bpb {val_bpb:.4f} — checkpoint saved")
+        else:
+            evals_since_best += 1
+            if args.patience > 0 and evals_since_best >= args.patience:
+                print0(f"Step {step:05d} | Early stop: val bpb hasn't improved for {evals_since_best} evals (patience={args.patience})")
+                last_step = True
         wandb_run.log({
             "step": step,
             "total_training_flops": flops_so_far,
