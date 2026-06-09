@@ -43,6 +43,7 @@ parser.add_argument("--device-type", type=str, default="", help="cuda|cpu|mps (e
 parser.add_argument("--model-tag", type=str, default=None, help="model tag to load from")
 parser.add_argument("--model-step", type=int, default=None, help="model step to load from")
 parser.add_argument("--load-optimizer", type=int, default=1, help="warm-start optimizer from pretrained checkpoint (0=no, 1=yes)")
+parser.add_argument("--resume-sft-step", type=int, default=0, help="resume from SFT checkpoint at this step (0 = disabled)")
 # Training horizon
 parser.add_argument("--num-iterations", type=int, default=-1, help="number of optimization steps (-1 = full epoch)")
 # Batch sizes (default: inherit from pretrained checkpoint)
@@ -95,7 +96,16 @@ if not HAS_FA3 and not HAS_FA2:
     print0("WARNING: Flash Attention 2/3 not available, using PyTorch SDPA fallback. Training will be less efficient.")
 
 # Load the model and tokenizer
-model, tokenizer, meta = load_model("base", device, phase="train", model_tag=args.model_tag, step=args.model_step)
+resuming = args.resume_sft_step > 0
+checkpoint_source = "sft" if resuming else "base"
+load_step = args.resume_sft_step if resuming else args.model_step
+model, tokenizer, meta = load_model(checkpoint_source, device, phase="train", model_tag=args.model_tag, step=load_step)
+if resuming:
+    print0(f"Resuming from SFT checkpoint at step {args.resume_sft_step}")
+    # SFT checkpoints store max_seq_len/total_batch_size differently from base pretrain checkpoints.
+    # The inheritance loop below looks for these as top-level meta keys; synthesize them if missing.
+    if "max_seq_len" not in meta:
+        meta["max_seq_len"] = meta["model_config"]["sequence_len"]
 
 # Inherit training hyperparameters from pretrained checkpoint (None = inherit, explicit value = override)
 pretrain_user_config = meta.get("user_config", {})
@@ -140,7 +150,19 @@ optimizer = model.setup_optimizer(unembedding_lr=args.unembedding_lr, embedding_
 # pretrained values. Since pretraining warmdown brings LRs to ~0, we must save and
 # restore our fresh SFT LRs after loading.
 base_dir = get_base_dir()
-if args.load_optimizer:
+if resuming:
+    # Resume from SFT checkpoint: load optimizer state as-is (initial_lr already set correctly)
+    optimizer_data = load_optimizer_state("sft", device, rank=ddp_rank, model_tag=args.model_tag, step=args.resume_sft_step)
+    if optimizer_data is not None:
+        optimizer.load_state_dict(optimizer_data)
+        del optimizer_data
+        print0(f"Loaded SFT optimizer state from step {args.resume_sft_step}")
+    else:
+        print0("WARNING: SFT optimizer checkpoint not found, starting with fresh optimizer")
+        for group in optimizer.param_groups:
+            group["lr"] = group["lr"] * args.init_lr_frac
+            group["initial_lr"] = group["lr"]
+elif args.load_optimizer:
     optimizer_data = load_optimizer_state("base", device, rank=ddp_rank, model_tag=args.model_tag, step=args.model_step)
     if optimizer_data is not None:
         base_lrs = [group["lr"] for group in optimizer.param_groups]
@@ -157,10 +179,11 @@ scaler = torch.amp.GradScaler() if COMPUTE_DTYPE == torch.float16 else None
 if scaler is not None:
     print0("GradScaler enabled for fp16 training")
 
-# Override the initial learning rate as a fraction of the base learning rate
-for group in optimizer.param_groups:
-    group["lr"] = group["lr"] * args.init_lr_frac
-    group["initial_lr"] = group["lr"]
+# Override the initial learning rate as a fraction of the base learning rate (skip when resuming)
+if not resuming:
+    for group in optimizer.param_groups:
+        group["lr"] = group["lr"] * args.init_lr_frac
+        group["initial_lr"] = group["lr"]
 
 # SFT data mixture and DataLoader
 identity_conversations_filepath = os.path.join(base_dir, "identity_conversations.jsonl")
@@ -175,6 +198,21 @@ train_tasks = [
 ]
 train_dataset = TaskMixture(train_tasks)
 print0(f"Training mixture: {len(train_dataset):,} rows (SmolTalk x2, GSM8K x{args.gsm8k_epochs}, no MMLU)")
+# For resume: estimate dataset position from the SFT checkpoint step.
+# approx_progress = consumed / dataset_size, so consumed = approx_progress * dataset_size.
+# We estimate approx_progress from the meta stored in the SFT checkpoint when resuming.
+consumed_at_resume = 0
+if resuming:
+    sft_meta = meta  # meta was loaded from the SFT checkpoint
+    resume_progress = sft_meta.get("approx_progress", None)
+    if resume_progress is None:
+        # Fall back: estimate from step count and an assumed dataset-driven rate.
+        # Each optimizer step consumed grad_accum_steps * device_batch_size rows on average
+        # (rough estimate; actual packing is variable). Use approx_progress if stored.
+        print0(f"WARNING: approx_progress not in SFT meta; cannot skip data — starting from beginning")
+    else:
+        consumed_at_resume = int(resume_progress * len(train_dataset))
+        print0(f"Will skip {consumed_at_resume:,} conversations (progress={resume_progress:.4f} from checkpoint meta)")
 val_dataset = TaskMixture([
     SmolTalk(split="test"), # 24K rows in test set
     GSM8K(subset="main", split="test", stop=420), # 1.32K rows in test set, use only 420 to match the train ratios
@@ -185,7 +223,7 @@ val_dataset = TaskMixture([
 last_step = False # we will toggle this to True when we reach the end of the training dataset
 approx_progress = 0.0 # will go from 0 to 1 over the course of the epoch
 current_epoch = 1 # track epoch for logging
-def sft_data_generator_bos_bestfit(split, buffer_size=100):
+def sft_data_generator_bos_bestfit(split, buffer_size=100, skip_progress=0.0):
     """
     BOS-aligned dataloader for SFT with bestfit-pad packing.
 
@@ -193,6 +231,9 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
     Conversations are packed using best-fit algorithm. When no conversation fits,
     the row is padded (instead of cropping) to ensure no tokens are ever discarded.
     Padding positions have targets masked with -1 (ignore_index for cross-entropy).
+
+    skip_progress: fraction of dataset to skip (for resume). Advances cursor/consumed
+    without tokenizing, restoring approximate data position from a prior interrupted run.
     """
     global last_step, approx_progress, current_epoch
     assert split in {"train", "val"}, "split must be 'train' or 'val'"
@@ -204,10 +245,13 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
 
     # Conversation buffer: list of (token_ids, loss_mask) tuples
     conv_buffer = []
-    cursor = ddp_rank  # Each rank processes different conversations (for fetching)
-    consumed = ddp_rank  # Track actual consumption separately from buffering
+    skip_n = int(skip_progress * dataset_size) if split == "train" else 0
+    cursor = (ddp_rank + skip_n) % dataset_size
+    consumed = skip_n + ddp_rank  # Track actual consumption separately from buffering
     epoch = 1
     it = 0  # iteration counter
+    if skip_n > 0:
+        print0(f"Resuming data: skipped {skip_n:,} conversations ({100*skip_progress:.2f}% of dataset)")
 
     def refill_buffer():
         nonlocal cursor, epoch
@@ -310,9 +354,10 @@ def sft_data_generator_bos_bestfit(split, buffer_size=100):
 
         yield inputs, targets
 
-train_loader = sft_data_generator_bos_bestfit("train")
+resume_skip_progress = consumed_at_resume / len(train_dataset) if resuming else 0.0
+train_loader = sft_data_generator_bos_bestfit("train", skip_progress=resume_skip_progress)
 build_val_loader = lambda: sft_data_generator_bos_bestfit("val")
-progress = 0 # will go from 0 to 1 over the course of the epoch
+progress = resume_skip_progress  # will go from 0 to 1 over the course of the epoch
 
 # Learning rate schedule (linear warmup, constant, linear warmdown)
 # Same shape as base_train but uses progress (0→1) instead of absolute step counts,
@@ -335,7 +380,7 @@ def get_muon_momentum(it):
 # -----------------------------------------------------------------------------
 # Training loop
 x, y = next(train_loader) # prefetch the very first batch of data
-min_val_bpb = float("inf")
+min_val_bpb = meta.get("val_bpb", float("inf")) if resuming else float("inf")
 evals_since_best = 0
 smooth_train_loss = 0 # EMA of training loss
 ema_beta = 0.9 # EMA decay factor
@@ -343,7 +388,7 @@ total_training_time = 0 # total wall-clock time of training
 num_skipped_microbatches = 0 # micro-batches dropped due to non-finite (e.g. fully-masked) loss
 num_skipped_steps = 0 # optimizer steps skipped due to non-finite accumulated gradient
 train_loss = torch.tensor(0.0, device=device) # last finite training loss (for logging)
-step = 0
+step = args.resume_sft_step
 while True:
     flops_so_far = num_flops_per_token * args.total_batch_size * step
 
@@ -373,6 +418,9 @@ while True:
                 {
                     "step": step,
                     "val_bpb": val_bpb,
+                    "approx_progress": progress,
+                    "max_seq_len": args.max_seq_len,
+                    "total_batch_size": args.total_batch_size,
                     "model_config": {
                         "sequence_len": args.max_seq_len,
                         "vocab_size": tokenizer.get_vocab_size(),
@@ -448,6 +496,9 @@ while True:
             {
                 "step": step,
                 "val_bpb": val_bpb, # loss at last step
+                "approx_progress": progress,
+                "max_seq_len": args.max_seq_len,
+                "total_batch_size": args.total_batch_size,
                 "model_config": {
                     "sequence_len": args.max_seq_len,
                     "vocab_size": tokenizer.get_vocab_size(),
