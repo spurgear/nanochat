@@ -13,7 +13,7 @@ CLAUDE.md
 wandb/
 
 # training logs
-**/speedrun.log
+**/*.log
 
 # claude
 .claude/*.lock
